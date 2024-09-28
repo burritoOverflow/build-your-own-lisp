@@ -1,3 +1,4 @@
+#include <errno.h>
 #include <readline/chardefs.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -12,37 +13,106 @@
 #include "mpc.h"
 // clang-format on
 
-long eval_op(const long x, const char* op, const long y) {
+#define SETRED "\033[31m"
+#define RESETCOLOR "\033[0m"
+
+typedef struct {
+  int type;  // which fields are meaningful
+  long num;  // the underlying value (when LISPVAL_NUM)
+  int err;   // which error (when error has occured, i.e type == LISPVAL_ERR)
+} lispvalue;
+
+// possible lispvalue types
+enum { LISPVAL_NUM, LISPVAL_ERR };
+
+// possible error types
+enum { LISPVALERR_DIV_ZERO, LISPVALERR_BAD_OP, LISPVALERR_BAD_NUM };
+
+// creation functions
+lispvalue lispvalue_num(const long x) {
+  lispvalue v;
+  v.type = LISPVAL_NUM;
+  v.num = x;
+  return v;
+}
+
+lispvalue lispvalue_err(const int x) {
+  lispvalue v;
+  v.type = LISPVAL_ERR;
+  v.err = x;
+  return v;
+}
+
+void lispvalue_show_value(const lispvalue lispval) {
+  switch (lispval.type) {
+    case LISPVAL_NUM:
+      printf("%li\n", lispval.num);
+      break;
+
+    case LISPVAL_ERR: {
+      if (lispval.err == LISPVALERR_DIV_ZERO) {
+        fprintf(stderr, SETRED "Error: Attempting to divide by 0\n" RESETCOLOR);
+      }
+
+      if (lispval.err == LISPVALERR_BAD_OP) {
+        fprintf(stderr, SETRED "Error: Invalid Operator\n" RESETCOLOR);
+      }
+
+      if (lispval.err == LISPVALERR_BAD_NUM) {
+        fprintf(stderr, SETRED "Error: Invalid Number\n" RESETCOLOR);
+      }
+    }
+  }
+}
+
+lispvalue eval_op(const lispvalue x, const char* op, const lispvalue y) {
+  // if either operand is an error, return that lispvalue
+  if (x.type == LISPVAL_ERR) {
+    return x;
+  }
+
+  if (y.type == LISPVAL_ERR) {
+    return y;
+  }
+
   if (strcmp(op, "+") == 0) {
-    return x + y;
+    return lispvalue_num(x.num + y.num);
   }
 
   if (strcmp(op, "-") == 0) {
-    return x - y;
+    return lispvalue_num(x.num - y.num);
   }
 
   if (strcmp(op, "*") == 0) {
-    return x * y;
+    return lispvalue_num(x.num * y.num);
   }
 
   if (strcmp(op, "/") == 0) {
-    return x / y;
+    // divide by zero error
+    if (y.num == 0) {
+      return lispvalue_err(LISPVALERR_DIV_ZERO);
+    }
+    return lispvalue_num(x.num / y.num);
   }
 
-  return 0;
+  return lispvalue_err(LISPVALERR_BAD_OP);
 }
 
-long eval(mpc_ast_t* t) {
+lispvalue eval(mpc_ast_t* t) {
   // Return the number when encountered
   if (strstr(t->tag, "number")) {
-    return atoi(t->contents);
+    errno = 0;
+    const long x = strtol(t->contents, NULL, 10);
+    // check for errno ==  not a representable value
+    return errno != ERANGE ? lispvalue_num(x)
+                           : lispvalue_err(LISPVALERR_BAD_NUM);
   }
 
   // Operator is always second child
   const char* op = t->children[1]->contents;
 
   // store the third child
-  long x = eval(t->children[2]);
+  lispvalue x = eval(t->children[2]);
 
   int i = 3;
   while (strstr(t->children[i]->tag, "expr")) {
@@ -88,8 +158,8 @@ int main(int argc, char** argv) {
     mpc_result_t result;
 
     if (mpc_parse("<stdin>", user_input, Lispy, &result)) {
-      const long eval_result = eval(result.output);
-      printf("%li\n", eval_result);
+      const lispvalue eval_result = eval(result.output);
+      lispvalue_show_value(eval_result);
       mpc_ast_delete(result.output);
     } else {
       // otherwise, show error
