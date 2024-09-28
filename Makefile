@@ -3,7 +3,7 @@ CC = gcc
 # assumes mpc installed to default PREFIX
 MPCRPATH = /usr/local/lib
 
-CFLAGS = -Wall -Wextra -std=c11 -v
+CFLAGS = -g -Wall -Wextra -std=c11
 
 LDFLAGS = -lreadline
 LDFLAGS += -lmpc -Wl,-rpath=$(MPCRPATH)
