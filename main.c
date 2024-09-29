@@ -42,7 +42,7 @@ static lispvalue* lispvalue_num(const long x) {
 static lispvalue* lispvalue_err(const char* m) {
   lispvalue* v = malloc(sizeof(lispvalue));
   v->type = LISPVAL_ERR;
-  v->err = malloc(sizeof(m));
+  v->err = malloc(strlen(m) + 1);
   strcpy(v->err, m);
   return v;
 }
@@ -63,7 +63,9 @@ static lispvalue* lispvalue_sexpr(void) {
   return v;
 }
 
+// a few forward declarations where needed
 static void lispvalue_print(lispvalue* v);
+static lispvalue* lispvalue_eval_sexpr(lispvalue* v);
 
 static void lispvalue_del(lispvalue* v) {
   switch (v->type) {
@@ -172,6 +174,122 @@ static void lispvalue_println(lispvalue* v) {
   putchar('\n');
 }
 
+// Element is removed from ownership of the containing struct
+// callers and recipients are responsible for deleting this `lispvalue`
+lispvalue* lispvalue_pop(lispvalue* v, int i) {
+  lispvalue* x = v->cell[i];
+
+  // shift memory after the item at 'i' over the top
+  memmove(&v->cell[i], &v->cell[i + 1],
+          sizeof(lispvalue*) * (v->count - i - 1));
+
+  v->count--;
+  v->cell = realloc(v->cell, sizeof(lispvalue*) * v->count);
+
+  return x;
+}
+
+lispvalue* lispvalue_take(lispvalue* v, int i) {
+  lispvalue* x = lispvalue_pop(v, i);
+  lispvalue_del(v);
+  return x;
+}
+
+static lispvalue* builtin_operator(lispvalue* v, const char* operator) {
+  // sanity check -- ensure all args are numbers
+  for (int i = 0; i < v->count; ++i) {
+    if (v->cell[i]->type != LISPVAL_NUM) {
+      lispvalue_del(v);
+      return lispvalue_err("Cannot apply operand to a non-number.");
+    }
+  }
+
+  // get the first element
+  lispvalue* first_operand = lispvalue_pop(v, 0);
+
+  // check if unary negation present and (no other elements in sexpr)
+  if (strcmp(operator, "-") == 0 && v->count == 0) {
+    first_operand->num = -first_operand->num;
+  }
+
+  // remaining elements
+  while (v->count > 0) {
+    lispvalue* next_operand = lispvalue_pop(v, 0);
+
+    if (strcmp(operator, "+") == 0) {
+      first_operand->num += next_operand->num;
+    }
+
+    if (strcmp(operator, "-") == 0) {
+      first_operand->num -= next_operand->num;
+    }
+
+    if (strcmp(operator, "*") == 0) {
+      first_operand->num *= next_operand->num;
+    }
+
+    if (strcmp(operator, "/") == 0) {
+      if (next_operand->num == 0) {
+        // neither are being returned to the caller given the failure
+        lispvalue_del(first_operand);
+        lispvalue_del(next_operand);
+
+        return lispvalue_err("Attempt to divide by zero.");
+      } else {
+        first_operand->num /= next_operand->num;
+      }
+    }
+
+    // operand has been applied to the retvalue; we no longer need it
+    lispvalue_del(next_operand);
+  }
+
+  lispvalue_del(v);
+  return first_operand;
+}
+
+static lispvalue* lispvalue_eval(lispvalue* v) {
+  return v->type == LISPVALUE_SEXPR ? lispvalue_eval_sexpr(v) : v;
+}
+
+static lispvalue* lispvalue_eval_sexpr(lispvalue* v) {
+  // eval all children
+  for (int i = 0; i < v->count; ++i) {
+    v->cell[i] = lispvalue_eval(v->cell[i]);
+  }
+
+  // handle errors
+  for (int i = 0; i < v->count; ++i) {
+    if (v->cell[i]->type == LISPVAL_ERR) {
+      return lispvalue_take(v, i);
+    }
+  }
+
+  // empty sexpr
+  if (v->count == 0) {
+    return v;
+  }
+
+  // single sexpr
+  if (v->count == 1) {
+    return lispvalue_take(v, 0);
+  }
+
+  // ensure the first element is a symbol
+  lispvalue* first = lispvalue_pop(v, 0);
+
+  if (first->type != LISPVALUE_SYMBOL) {
+    lispvalue_del(first);
+    lispvalue_del(v);
+    return lispvalue_err("S-Expression does not start with a symbol.");
+  }
+
+  lispvalue* result = builtin_operator(v, first->symbol);
+  lispvalue_del(first);
+
+  return result;
+}
+
 int main(int argc, char** argv) {
   (void)argc;
   (void)argv;
@@ -207,8 +325,10 @@ int main(int argc, char** argv) {
 
     // attempt to parse user's input
     mpc_result_t result;
+
     if (mpc_parse("<stdin>", user_input, Lispy, &result)) {
-      lispvalue* x = lispvalue_read(result.output);
+      lispvalue* output = lispvalue_read(result.output);
+      lispvalue* x = lispvalue_eval(output);
       lispvalue_println(x);
       lispvalue_del(x);
     } else {
