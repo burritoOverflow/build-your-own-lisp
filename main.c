@@ -26,7 +26,13 @@ typedef struct lispvalue {
 } lispvalue;
 
 // possible lispvalue types
-enum { LISPVAL_NUM, LISPVAL_ERR, LISPVALUE_SYMBOL, LISPVALUE_SEXPR };
+enum {
+  LISPVAL_NUM,
+  LISPVAL_ERR,
+  LISPVALUE_SYMBOL,
+  LISPVALUE_SEXPR,
+  LISPVALUE_QEXPR
+};
 
 // possible error types
 enum { LISPVALERR_DIV_ZERO, LISPVALERR_BAD_OP, LISPVALERR_BAD_NUM };
@@ -63,6 +69,14 @@ static lispvalue* lispvalue_sexpr(void) {
   return v;
 }
 
+static lispvalue* lispvalue_qexpr(void) {
+  lispvalue* v = malloc(sizeof(lispvalue));
+  v->type = LISPVALUE_QEXPR;
+  v->count = 0;
+  v->cell = NULL;
+  return v;
+}
+
 // a few forward declarations where needed
 static void lispvalue_print(lispvalue* v);
 static lispvalue* lispvalue_eval_sexpr(lispvalue* v);
@@ -81,6 +95,7 @@ static void lispvalue_del(lispvalue* v) {
       break;
 
     case LISPVALUE_SEXPR:
+    case LISPVALUE_QEXPR:
       for (int i = 0; i < v->count; i++) {
         lispvalue_del(v->cell[i]);
       }
@@ -122,9 +137,15 @@ static lispvalue* lispvalue_read(mpc_ast_t* t) {
     x = lispvalue_sexpr();
   }
 
+  if (strstr(t->tag, "qexpr")) {
+    x = lispvalue_qexpr();
+  }
+
   for (int i = 0; i < t->children_num; i++) {
     if (strcmp(t->children[i]->contents, "(") == 0 ||
         strcmp(t->children[i]->contents, ")") == 0 ||
+        strcmp(t->children[i]->contents, "{") == 0 ||
+        strcmp(t->children[i]->contents, "}") == 0 ||
         strcmp(t->children[i]->tag, "regex") == 0) {
       continue;
     }
@@ -165,6 +186,10 @@ static void lispvalue_print(lispvalue* v) {
 
     case LISPVALUE_SEXPR:
       lispvalue_expr_print(v, '(', ')');
+      break;
+
+    case LISPVALUE_QEXPR:
+      lispvalue_expr_print(v, '{', '}');
       break;
   }
 }
@@ -300,19 +325,21 @@ int main(int argc, char** argv) {
   mpc_parser_t* Number = mpc_new("number");
   mpc_parser_t* Symbol = mpc_new("symbol");
   mpc_parser_t* Sexpr = mpc_new("sexpr");
+  mpc_parser_t* Qexpr = mpc_new("qexpr");
   mpc_parser_t* Expr = mpc_new("expr");
   mpc_parser_t* Lispy = mpc_new("lispy");
 
   // clang-format off
-  mpca_lang(MPCA_LANG_DEFAULT,
-    "                                          \
-      number : /-?[0-9]+/ ;                    \
-      symbol : '+' | '-' | '*' | '/' ;         \
-      sexpr  : '(' <expr>* ')' ;               \
-      expr   : <number> | <symbol> | <sexpr> ; \
-      lispy  : /^/ <expr>* /$/ ;               \
-    ",
-    Number, Symbol, Sexpr, Expr, Lispy);
+mpca_lang(MPCA_LANG_DEFAULT,
+  "                                          \
+    number : /-?[0-9]+/ ;                              \
+    symbol : '+' | '-' | '*' | '/' ;                   \
+    sexpr  : '(' <expr>* ')' ;                         \
+    qexpr  : '{' <expr>* '}' ;                         \
+    expr   : <number> | <symbol> | <sexpr> | <qexpr> ; \
+    lispy  : /^/ <expr>* /$/ ;                         \
+  ",
+  Number, Symbol, Sexpr, Qexpr, Expr, Lispy);
   // clang-format on
 
   while (true) {
@@ -340,6 +367,6 @@ int main(int argc, char** argv) {
     free(user_input);
   }  // end REPL
 
-  mpc_cleanup(4, Number, Symbol, Sexpr, Expr, Lispy);
+  mpc_cleanup(6, Number, Symbol, Sexpr, Qexpr, Expr, Lispy);
   exit(EXIT_SUCCESS);
 }
