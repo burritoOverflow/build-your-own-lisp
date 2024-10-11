@@ -78,8 +78,10 @@ static lispvalue* lispvalue_qexpr(void) {
 }
 
 // a few forward declarations where needed
+static lispvalue* builtin(lispvalue* a, char* func_name);
 static void lispvalue_print(lispvalue* v);
 static lispvalue* lispvalue_eval_sexpr(lispvalue* v);
+static lispvalue* lispvalue_eval(lispvalue* v);
 
 static void lispvalue_del(lispvalue* v) {
   switch (v->type) {
@@ -273,6 +275,112 @@ static lispvalue* builtin_operator(lispvalue* v, const char* operator) {
   return first_operand;
 }
 
+static lispvalue* builtin_head(lispvalue* a) {
+  if (a->count != 1) {
+    lispvalue_del(a);
+    return lispvalue_err("'head' passed too many arguments; expected 1.");
+  }
+
+  if (a->cell[0]->type != LISPVALUE_QEXPR) {
+    lispvalue_del(a);
+    return lispvalue_err("'head' passed incorrect types.");
+  }
+
+  if (a->cell[0]->count == 0) {
+    lispvalue_del(a);
+    return lispvalue_err("'head' passed {}");
+  }
+
+  // take first element
+  lispvalue* v = lispvalue_take(a, 0);
+
+  // delete remaining elements and return
+  while (v->count > 1) {
+    lispvalue_del(lispvalue_pop(v, 1));
+  }
+
+  return v;
+}
+
+static lispvalue* builtin_tail(lispvalue* a) {
+  if (a->count != 1) {
+    lispvalue_del(a);
+    return lispvalue_err("'tail' passed too many arguments; expected 1.");
+  }
+
+  if (a->cell[0]->type != LISPVALUE_QEXPR) {
+    lispvalue_del(a);
+    return lispvalue_err("'tail' passed incorrect types.");
+  }
+
+  if (a->cell[0]->count == 0) {
+    lispvalue_del(a);
+    return lispvalue_err("'tail' passed {}");
+  }
+
+  // take the first element
+  lispvalue* v = lispvalue_take(a, 0);
+
+  // delete the first element and return
+  lispvalue_del(lispvalue_pop(v, 0));
+
+  return v;
+}
+
+// return the input S-Expression as a Q-Expression
+static lispvalue* builtin_list(lispvalue* a) {
+  a->type = LISPVALUE_QEXPR;
+  return a;
+}
+
+// converse of the above; takes an input Q-Expression and returns S-Expression
+static lispvalue* builtin_eval(lispvalue* a) {
+  if (a->count != 1) {
+    lispvalue_del(a);
+    return lispvalue_err("'eval' passed too many arguments; expected 1.");
+  }
+
+  if (a->cell[0]->type != LISPVALUE_QEXPR) {
+    lispvalue_del(a);
+    return lispvalue_err("'eval' passed incorrect types.");
+  }
+
+  // as S-Expression
+  lispvalue* x = lispvalue_take(a, 0);
+  x->type = LISPVALUE_SEXPR;
+  return lispvalue_eval(x);
+}
+
+static lispvalue* lispvalue_join(lispvalue* x, lispvalue* y) {
+  // add 'x' to each cell in 'y'
+  while (y->count) {
+    x = lispvalue_add(x, lispvalue_pop(y, 0));
+  }
+
+  // delete empty 'y'
+  lispvalue_del(y);
+  // returb modified 'x'
+  return x;
+}
+
+static lispvalue* builtin_join(lispvalue* a) {
+  for (int i = 0; i < a->count; ++i) {
+    if (a->cell[i]->type != LISPVALUE_QEXPR) {
+      lispvalue_del(a);
+      return lispvalue_err("'join' passed incorrect type");
+    }
+  }
+
+  lispvalue* x = lispvalue_pop(a, 0);
+
+  while (a->count) {
+    x = lispvalue_join(x, lispvalue_pop(a, 0));
+  }
+
+  lispvalue_del(a);
+  return x;
+}
+
 static lispvalue* lispvalue_eval(lispvalue* v) {
   return v->type == LISPVALUE_SEXPR ? lispvalue_eval_sexpr(v) : v;
 }
@@ -309,10 +417,40 @@ static lispvalue* lispvalue_eval_sexpr(lispvalue* v) {
     return lispvalue_err("S-Expression does not start with a symbol.");
   }
 
-  lispvalue* result = builtin_operator(v, first->symbol);
+  lispvalue* result = builtin(v, first->symbol);
   lispvalue_del(first);
 
   return result;
+}
+
+static lispvalue* builtin(lispvalue* a, char* func_name) {
+  if (strcmp("list", func_name) == 0) {
+    return builtin_list(a);
+  }
+
+  if (strcmp("head", func_name) == 0) {
+    return builtin_head(a);
+  }
+
+  if (strcmp("tail", func_name) == 0) {
+    return builtin_tail(a);
+  }
+
+  if (strcmp("join", func_name) == 0) {
+    return builtin_join(a);
+  }
+
+  if (strcmp("eval", func_name) == 0) {
+    return builtin_eval(a);
+  }
+
+  if (strstr("+-/*", func_name)) {
+    return builtin_operator(a, func_name);
+  }
+
+  lispvalue_del(a);
+
+  return lispvalue_err("Unknown function provided.");
 }
 
 int main(int argc, char** argv) {
@@ -331,13 +469,14 @@ int main(int argc, char** argv) {
 
   // clang-format off
 mpca_lang(MPCA_LANG_DEFAULT,
-  "                                          \
-    number : /-?[0-9]+/ ;                              \
-    symbol : '+' | '-' | '*' | '/' ;                   \
-    sexpr  : '(' <expr>* ')' ;                         \
-    qexpr  : '{' <expr>* '}' ;                         \
-    expr   : <number> | <symbol> | <sexpr> | <qexpr> ; \
-    lispy  : /^/ <expr>* /$/ ;                         \
+  "                                              \
+    number : /-?[0-9]+/ ;                                  \
+    symbol : \"list\" | \"head\" | \"tail\"                \
+           | \"join\" | \"eval\" | '+' | '-' | '*' | '/' ; \
+    sexpr  : '(' <expr>* ')' ;                             \
+    qexpr  : '{' <expr>* '}' ;                             \
+    expr   : <number> | <symbol> | <sexpr> | <qexpr> ;     \
+    lispy  : /^/ <expr>* /$/ ;                             \
   ",
   Number, Symbol, Sexpr, Qexpr, Expr, Lispy);
   // clang-format on
